@@ -1,0 +1,12 @@
+{
+  "name": "xiaozhi-music-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local music and story server for Xiaozhi ESP32",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "soundcloud-downloader": "^1.0.0"
+  }
+}
