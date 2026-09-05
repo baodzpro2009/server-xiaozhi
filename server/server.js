@@ -3,11 +3,13 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { URL } = require('url');
+const { spawn } = require('child_process');
 
 const PORT = Number(process.env.PORT || 3000);
 const ROOT = path.resolve(__dirname, 'media');
 const HOST = process.env.HOST || '0.0.0.0';
 let soundcloud;
+let ffmpeg;
 
 function getSoundcloud() {
   if (!soundcloud) {
@@ -18,6 +20,43 @@ function getSoundcloud() {
     }
   }
   return soundcloud;
+}
+
+function getFfmpeg() {
+  if (!ffmpeg) ffmpeg = require('ffmpeg-static');
+  return ffmpeg;
+}
+
+function looksLikeMp3(filePath) {
+  if (!fs.existsSync(filePath) || fs.statSync(filePath).size < 4) return false;
+  const fd = fs.openSync(filePath, 'r');
+  const header = Buffer.alloc(4);
+  fs.readSync(fd, header, 0, 4, 0);
+  fs.closeSync(fd);
+  return header.toString('ascii', 0, 3) === 'ID3' ||
+    (header[0] === 0xff && (header[1] & 0xe0) === 0xe0);
+}
+
+async function saveAsMp3(inputStream, target) {
+  const converter = spawn(getFfmpeg(), [
+    '-hide_banner', '-loglevel', 'error', '-i', 'pipe:0', '-vn',
+    '-f', 'mp3', '-codec:a', 'libmp3lame', '-ar', '16000', '-ac', '1',
+    '-b:a', '96k', 'pipe:1'
+  ]);
+  const output = fs.createWriteStream(target);
+  let stderr = '';
+  converter.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+  inputStream.on('error', () => converter.kill('SIGTERM'));
+  converter.stdin.on('error', () => {});
+  output.on('error', () => converter.kill('SIGTERM'));
+  inputStream.pipe(converter.stdin);
+  converter.stdout.pipe(output);
+  await new Promise((resolve, reject) => {
+    converter.on('error', reject);
+    converter.on('close', (code) => code === 0
+      ? resolve()
+      : reject(new Error(`ffmpeg failed (${code}): ${stderr.trim()}`)));
+  });
 }
 
 function normalizeName(value) {
@@ -113,13 +152,10 @@ async function downloadSoundcloudTrack(trackUrl) {
   const info = await scdl.getInfo(trackUrl);
   const title = safeFileName(`${info.user?.username || 'SoundCloud'} - ${info.title}`);
   const target = path.join(ROOT, 'songs', `${title}.mp3`);
+  if (fs.existsSync(target) && !looksLikeMp3(target)) fs.unlinkSync(target);
   if (!fs.existsSync(target)) {
     const stream = await scdl.download(trackUrl);
-    await new Promise((resolve, reject) => {
-      const output = fs.createWriteStream(target);
-      stream.on('error', reject); output.on('error', reject);
-      output.on('finish', resolve); stream.pipe(output);
-    });
+    await saveAsMp3(stream, target);
   }
   return { name: title, path: `songs/${path.basename(target)}`, index: getIndex() };
 }
